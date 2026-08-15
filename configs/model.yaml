@@ -1,0 +1,9 @@
+# Model architecture config. Target: ~26M parameters.
+# TODO: tune dims so param count lands near 26M.
+
+vocab_size: null        # TODO: set after tokenizer trained
+hidden_size: null       # TODO
+num_layers: null        # TODO
+num_heads: null         # TODO
+context_length: null    # TODO
+dropout: 0.0

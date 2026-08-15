@@ -1,0 +1,15 @@
+# Training config. Assume single 8GB VRAM GPU (RX 6600, ROCm).
+# TODO: set values once model size and data are finalized.
+
+batch_size: null       # TODO — keep small enough for 8GB VRAM
+grad_accum_steps: 1
+learning_rate: null    # TODO
+max_steps: null         # TODO
+warmup_steps: null      # TODO
+eval_interval: null     # TODO
+checkpoint_interval: null  # TODO
+checkpoint_dir: outputs/checkpoints
+log_dir: outputs/logs
+
+mixed_precision: true   # TODO: confirm ROCm fp16/bf16 support on RX 6600
+seed: 26

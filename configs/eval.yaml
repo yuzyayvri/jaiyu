@@ -1,0 +1,8 @@
+# Evaluation config. Held-out, local, interpretable.
+# TODO: define eval sets per topic/difficulty.
+
+eval_data_dir: data/eval
+checkpoint_path: null  # TODO: checkpoint to evaluate
+
+metrics: []             # TODO: e.g. [exact_match, loss, format_consistency]
+topics: []               # TODO: e.g. [arithmetic, algebra, geometry, ...]

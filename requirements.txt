@@ -1,0 +1,10 @@
+--extra-index-url https://download.pytorch.org/whl/rocm6.3
+# ROCm version above must match your local ROCm install (check `rocminfo` / Arch `rocm-*` pkg versions).
+
+# Core.
+torch
+torchaudio
+numpy
+tokenizers
+pyyaml
+tqdm

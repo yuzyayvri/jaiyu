@@ -1,0 +1,11 @@
+# Data pipeline config.
+# TODO: define curriculum stages (foundational -> advanced) and mixing weights.
+
+raw_dir: data/raw
+processed_dir: data/processed
+eval_dir: data/eval
+
+tokenizer_path: null  # TODO: path to trained tokenizer
+
+sources: []            # TODO: list synthetic generators / public datasets used
+curriculum_stages: []  # TODO: e.g. [arithmetic, fractions, algebra, ...]

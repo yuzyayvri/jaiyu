@@ -1,0 +1,14 @@
+[project]
+name = "jaiyu"
+version = "0.1.0"
+description = "Personal, non-commercial research project: a ~26M-parameter math-focused language model trained locally."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Non-commercial, personal research use only" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
