@@ -6,12 +6,12 @@ import argparse
 import torch
 from tokenizers import Tokenizer
 
-from jaiyu.model.config import GPTConfig
+from jaiyu.model.config import load_config
 from jaiyu.model.transformer import GPT
 
 import random
 
-EOS_ID = 50256
+EOS_ID = 1
 
 
 def parse_args():
@@ -21,6 +21,7 @@ def parse_args():
     p.add_argument("--max-new-tokens", type=int, default=128)
     p.add_argument("--temperature", type=float, default=0.8, help="Sampling temperature.")
     p.add_argument("--repetition-penalty", type=float, default=1.3, help="Repetition penalty.")
+    p.add_argument("--tokenizer", default="data/tokenizer/jaiyu_tokenizer.json")
     return p.parse_args()
 
 
@@ -31,32 +32,33 @@ def main() -> None:
     temperature = args.temperature
     repetition_penalty = args.repetition_penalty
 
-    device = torch.device("cuda")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    config = GPTConfig()
+    config = load_config()
     model = GPT(config)
     state_dict = torch.load(args.checkpoint, map_location=device, weights_only=True)
     model.load_state_dict(state_dict)
     model.to(device)
     model.eval()
 
-    tokenizer = Tokenizer.from_pretrained("gpt2")
+    tokenizer = Tokenizer.from_file(args.tokenizer)
 
     ids = tokenizer.encode(args.prompt).ids
     idx = torch.tensor([ids], dtype=torch.long, device=device)
-
-    temperature = 0.8
-    repetition_penalty = 1.3
 
     with torch.no_grad():
         for _ in range(args.max_new_tokens):
             idx_cond = idx[:, -config.block_size:]
             logits, _ = model(idx_cond)
 
-            # Apply repetition penalty to previously seen tokens
+            # Apply repetition penalty to previously seen tokens (CTRL-style,
+            # sign-aware: dividing a negative logit would make it larger)
             if repetition_penalty != 1.0:
                 for token_id in set(idx[0].tolist()):
-                    logits[0, -1, token_id] /= repetition_penalty
+                    if logits[0, -1, token_id] > 0:
+                        logits[0, -1, token_id] /= repetition_penalty
+                    else:
+                        logits[0, -1, token_id] *= repetition_penalty
 
             # Apply temperature
             logits = logits / temperature

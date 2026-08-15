@@ -20,20 +20,33 @@ def test_arithmetic_deterministic_and_correct():
         assert e.split in ("train", "eval")
 
 
+def test_arithmetic_place_value_reasoning_consistent():
+    # regression: intermediates must actually sum to the stated result
+    combine = re.compile(r"Combine: (-?\d+) \+ (-?\d+) = (-?\d+)\.")
+    for e in generate_arithmetic(seed=99, n=200):
+        m = combine.search(e.text)
+        if m:  # only +/- examples emit a "Combine:" line
+            tens_part, ones_part, result = (int(v) for v in m.groups())
+            assert tens_part + ones_part == result == int(e.answer)
+
+
 def test_fractions_correct():
     for e in generate_fractions(seed=7, n=20):
         assert Fraction(e.answer) == Fraction(e.answer)  # parses cleanly
 
 
 def test_linear_equations_solution_correct():
-    pattern = re.compile(r"Solve for x: (-?\d+)x \+ (-?\d+) = (-?\d+)")
+    pattern = re.compile(r"Solve (-?\d+)x ([+-]) (\d+) = (-?\d+)\.")
     for e in generate_linear_equations(seed=3, n=30):
-        a, b, c = (int(v) for v in pattern.search(e.text).groups())
-        assert a * int(e.answer) + b == c
+        a, sign, b, c = pattern.search(e.text).groups()
+        b = int(b) if sign == "+" else -int(b)
+        x = int(e.answer.removeprefix("x = "))
+        assert int(a) * x + b == int(c)
 
 
 if __name__ == "__main__":
     test_arithmetic_deterministic_and_correct()
+    test_arithmetic_place_value_reasoning_consistent()
     test_fractions_correct()
     test_linear_equations_solution_correct()
     print("ok")

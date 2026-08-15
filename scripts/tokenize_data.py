@@ -1,4 +1,5 @@
 """Tokenize and pack Jaiyu synthetic math data into fixed-length chunks."""
+import argparse
 import json
 from pathlib import Path
 
@@ -6,7 +7,8 @@ import numpy as np
 from tokenizers import Tokenizer
 
 SEQ_LEN = 512
-EOS_ID = 50256
+EOS_ID = 1
+PAD_ID = 0
 
 IN_DIR = Path("data/intermediate/synthetic")
 OUT_DIR = Path("data/processed/tokenized")
@@ -22,10 +24,11 @@ def tokenize_and_pack(examples: list[dict], tokenizer: Tokenizer) -> np.ndarray:
     for ex in examples:
         full_text = ex["text"] + "Answer: " + ex["answer"] + "\n"
         ids.extend(tokenizer.encode(full_text).ids)
+        ids.append(EOS_ID)
 
     n_chunks = (len(ids) + SEQ_LEN - 1) // SEQ_LEN
     padded_len = n_chunks * SEQ_LEN
-    ids.extend([EOS_ID] * (padded_len - len(ids)))
+    ids.extend([PAD_ID] * (padded_len - len(ids)))
 
     arr = np.array(ids, dtype=np.uint16).reshape(n_chunks, SEQ_LEN)
     return arr
@@ -43,7 +46,11 @@ def process(split: str, tokenizer: Tokenizer) -> None:
 
 
 def main() -> None:
-    tokenizer = Tokenizer.from_pretrained("gpt2")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--tokenizer", default="data/tokenizer/jaiyu_tokenizer.json")
+    args = parser.parse_args()
+
+    tokenizer = Tokenizer.from_file(args.tokenizer)
     process("train", tokenizer)
     process("eval", tokenizer)
 

@@ -8,6 +8,7 @@ evenly across arithmetic, fractions, and linear equations.
 import argparse
 import dataclasses
 import json
+import random
 from pathlib import Path
 
 from jaiyu.data.generators import (
@@ -46,23 +47,37 @@ def main() -> None:
     train_path = args.out_dir / "train.jsonl"
     eval_path = args.out_dir / "eval.jsonl"
 
+    rng = random.Random(args.seed)
+    train_examples: list = []
+    eval_examples: list = []
+
+    for i, topic in enumerate(topics):
+        n_train, n_eval = train_counts[i], eval_counts[i]
+        examples = GENERATORS[topic](seed=args.seed + i, n=n_train + n_eval)
+        rng.shuffle(examples)
+
+        for ex, split in zip(examples, ["train"] * n_train + ["eval"] * n_eval):
+            ex.split = split
+            (train_examples if split == "train" else eval_examples).append(ex)
+
+        summary[topic] = n_train + n_eval
+
+    # Repetition within train is fine; only eval must stay disjoint from train.
+    train_texts = {ex.text for ex in train_examples}
+    eval_examples = [ex for ex in eval_examples if ex.text not in train_texts]
+
     with train_path.open("w") as train_f, eval_path.open("w") as eval_f:
-        for i, topic in enumerate(topics):
-            n_train, n_eval = train_counts[i], eval_counts[i]
-            examples = GENERATORS[topic](seed=args.seed + i, n=n_train + n_eval)
-
-            for ex, split in zip(examples, ["train"] * n_train + ["eval"] * n_eval):
-                ex.split = split
-                out = train_f if split == "train" else eval_f
-                out.write(json.dumps(dataclasses.asdict(ex)) + "\n")
-
-            summary[topic] = n_train + n_eval
+        for ex in train_examples:
+            train_f.write(json.dumps(dataclasses.asdict(ex)) + "\n")
+        for ex in eval_examples:
+            eval_f.write(json.dumps(dataclasses.asdict(ex)) + "\n")
 
     print("Synthetic data generation complete:")
     for topic, count in summary.items():
         print(f"  {topic}: {count} examples")
-    print(f"  total train: {args.num_train} -> {train_path}")
-    print(f"  total eval:  {args.num_eval} -> {eval_path}")
+    print(f"  total train: {len(train_examples)} -> {train_path}")
+    print(f"  total eval:  {len(eval_examples)} (of {args.num_eval} requested, "
+          f"dupes-of-train dropped) -> {eval_path}")
 
 
 if __name__ == "__main__":

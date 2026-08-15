@@ -1,11 +1,11 @@
 import torch
 
-from jaiyu.model.config import GPTConfig
+from jaiyu.model.config import load_config
 from jaiyu.model.transformer import GPT
 
 
 def main():
-    config = GPTConfig()
+    config = load_config()
     model = GPT(config)
     print(f"parameters: {model.count_parameters():,}")
 
