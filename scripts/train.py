@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from jaiyu.model.config import GPTConfig
+from jaiyu.model.config import load_config
 from jaiyu.model.transformer import GPT
 
 
@@ -20,10 +20,8 @@ class TokenDataset(Dataset):
         if tokens.ndim == 2:
             tokens = tokens.flatten()
 
-        # Add one GPT-2 EOS token (50256) at the very end so the math divides perfectly
-        tokens = np.append(tokens, 50256)
-
-        # Now we can safely calculate chunks based on the TOTAL number of tokens
+        # Truncate to the nearest multiple of (block_size + 1); leftover
+        # tokens that don't fill a full sequence are discarded.
         n_seq = (len(tokens) // (block_size + 1)) * (block_size + 1)
         self.data = torch.from_numpy(tokens[:n_seq].astype(np.int64)).view(-1, block_size + 1)
 
@@ -61,7 +59,7 @@ def evaluate(model, loader, device):
     losses = []
     for x, y in loader:
         x, y = x.to(device), y.to(device)
-        with torch.amp.autocast(device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"):
+        with torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
             _, loss = model(x, y)
         losses.append(loss.item())
     model.train()
@@ -77,9 +75,19 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    config = GPTConfig()
+    config = load_config()
     train_ds = TokenDataset(args.train_data, block_size=config.block_size)
     eval_ds = TokenDataset(args.eval_data, block_size=config.block_size)
+    assert len(train_ds) > 0, "Training dataset is empty"
+    assert len(eval_ds) > 0, "Eval dataset is empty"
+    # Out-of-range ids are an out-of-bounds embedding lookup: on CPU that's an
+    # IndexError, on ROCm it faults the GPU queue with an unreadable HSA error.
+    for name, ds in (("train", train_ds), ("eval", eval_ds)):
+        max_id = int(ds.data.max())
+        assert max_id < config.vocab_size, (
+            f"{name} data contains token id {max_id} but vocab_size is "
+            f"{config.vocab_size}; re-tokenize or fix the config"
+        )
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
     eval_loader = DataLoader(eval_ds, batch_size=args.batch_size, shuffle=False)
     train_iter = cycle(train_loader)
@@ -88,13 +96,13 @@ def main():
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay
     )
-
+    # bf16 has the same exponent range as fp32, so no gradient scaler is needed.
     model.train()
     for step in range(1, args.max_steps + 1):
         x, y = next(train_iter)
         x, y = x.to(device), y.to(device)
 
-        with torch.amp.autocast(device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"):
+        with torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
             _, loss = model(x, y)
 
         optimizer.zero_grad(set_to_none=True)

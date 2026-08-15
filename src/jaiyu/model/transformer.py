@@ -13,14 +13,11 @@ class CausalSelfAttention(nn.Module):
         assert config.n_embd % config.n_head == 0
         self.n_head = config.n_head
         self.head_dim = config.n_embd // config.n_head
+        self.dropout = config.dropout
 
         self.qkv_proj = nn.Linear(config.n_embd, 3 * config.n_embd)
         self.out_proj = nn.Linear(config.n_embd, config.n_embd)
-        self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
-
-        mask = torch.tril(torch.ones(config.block_size, config.block_size))
-        self.register_buffer("mask", mask.view(1, 1, config.block_size, config.block_size))
 
     def forward(self, x):
         B, T, C = x.shape
@@ -29,12 +26,9 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
 
-        att = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        att = att.masked_fill(self.mask[:, :, :T, :T] == 0, float("-inf"))
-        att = F.softmax(att, dim=-1)
-        att = self.attn_dropout(att)
-
-        y = att @ v
+        y = F.scaled_dot_product_attention(
+            q, k, v, is_causal=True, dropout_p=self.dropout if self.training else 0.0
+        )
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         return self.resid_dropout(self.out_proj(y))
 
@@ -76,6 +70,22 @@ class GPT(nn.Module):
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.n_layer)])
         self.ln_f = nn.LayerNorm(config.n_embd)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+
+        self.apply(self._init_weights)
+        # scale down residual projections so the residual stream's variance
+        # doesn't grow with depth (GPT-2 init trick)
+        for name, param in self.named_parameters():
+            if name.endswith("out_proj.weight") or name.endswith("mlp.proj.weight"):
+                torch.nn.init.normal_(param, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer))
+
+    @staticmethod
+    def _init_weights(module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def count_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
