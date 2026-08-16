@@ -37,7 +37,12 @@ def jsonl_files(paths: list[Path]) -> list[Path]:
         elif p.exists():
             files.append(p)
         else:
-            print(f"warning: {p} not found, skipping")
+            raise SystemExit(
+                f"{p} not found. Training on a partial corpus silently produces a "
+                f"tokenizer that does not match the data. Generated corpora are not "
+                f"in git; run scripts/make_pretrain_data.py and "
+                f"scripts/download_math_data.py first."
+            )
     assert files, "no training corpora found"
     return files
 

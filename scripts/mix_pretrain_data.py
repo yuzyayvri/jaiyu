@@ -150,8 +150,12 @@ def main() -> None:
         elif path.exists():
             streams[name] = file_docs(path)
         else:
-            print(f"warning: missing {path}, skipping category {name!r}")
-            continue
+            raise SystemExit(
+                f"missing {path} (category {name!r}, {100 * share:.0f}% of the mix). "
+                f"Skipping it would silently produce a corpus with the wrong "
+                f"proportions. Generated corpora are not in git; run "
+                f"scripts/make_pretrain_data.py and scripts/download_math_data.py first."
+            )
         budgets[name] = int(total * share)
 
     assert budgets, "no data sources available"
