@@ -8,7 +8,7 @@ from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", default="data/intermediate/synthetic/train.jsonl")
-    parser.add_argument("--vocab-size", type=int, default=3000)
+    parser.add_argument("--vocab-size", type=int, default=512)
     args = parser.parse_args()
 
     out_path = "data/tokenizer/jaiyu_tokenizer.json"
@@ -21,13 +21,23 @@ def main():
                 yield example["text"] + "Answer: " + example["answer"] + "\n"
 
     tokenizer = Tokenizer(models.BPE(unk_token="<unk>"))
-    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    # Digits first: without it BPE merges whole numbers into atomic symbols
+    # ("34" and "49" become unrelated ids), so the model can only memorise an
+    # a+b lookup table instead of learning digit arithmetic. Splitting to
+    # individual digits gives it 10 reusable symbols with place structure.
+    tokenizer.pre_tokenizer = pre_tokenizers.Sequence([
+        pre_tokenizers.Digits(individual_digits=True),
+        pre_tokenizers.ByteLevel(add_prefix_space=False),
+    ])
     tokenizer.decoder = decoders.ByteLevel()
 
     trainer = trainers.BpeTrainer(
         vocab_size=args.vocab_size,
         min_frequency=2,
         special_tokens=["<pad>", "<eos>", "<unk>"],
+        # Seed the full byte alphabet so a character the corpus gains later
+        # (e.g. "quotient" after a generator change) can never become <unk>.
+        initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
     )
 
     tokenizer.train_from_iterator(text_iterator(), trainer=trainer)

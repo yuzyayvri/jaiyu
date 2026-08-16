@@ -16,11 +16,18 @@ EOS_ID = 1
 
 def parse_args():
     p = argparse.ArgumentParser(description="Sample from a Jaiyu checkpoint.")
-    p.add_argument("--checkpoint", default="outputs/checkpoints/step_1000.pt", help="Path to model checkpoint.")
+    p.add_argument("--checkpoint", default="outputs/checkpoints/digit-tokenizer/step_3000.pt",
+                   help="Path to model checkpoint.")
     p.add_argument("--prompt", required=True, help="Prompt text.")
     p.add_argument("--max-new-tokens", type=int, default=128)
-    p.add_argument("--temperature", type=float, default=0.8, help="Sampling temperature.")
-    p.add_argument("--repetition-penalty", type=float, default=1.3, help="Repetition penalty.")
+    # A math problem has exactly one right answer, so the default decode is
+    # greedy. Temperature and repetition penalty both make it worse: sampling
+    # picks a wrong digit, and the penalty suppresses digits already in the
+    # question (which are often the correct ones, e.g. "33 - 0 = 33").
+    p.add_argument("--temperature", type=float, default=0.0, help="0 = greedy.")
+    p.add_argument("--repetition-penalty", type=float, default=1.0, help="Repetition penalty.")
+    p.add_argument("--raw", action="store_true",
+                   help="Use the prompt verbatim instead of wrapping it in the training format.")
     p.add_argument("--tokenizer", default="data/tokenizer/jaiyu_tokenizer.json")
     return p.parse_args()
 
@@ -43,7 +50,10 @@ def main() -> None:
 
     tokenizer = Tokenizer.from_file(args.tokenizer)
 
-    ids = tokenizer.encode(args.prompt).ids
+    # Every training sequence looks like "Question: ...\nThought: ...". A bare
+    # "34 + 15" is off-distribution and the model wanders into another topic.
+    prompt = args.prompt if args.raw else f"Question: {args.prompt}\nThought:"
+    ids = tokenizer.encode(prompt).ids
     idx = torch.tensor([ids], dtype=torch.long, device=device)
 
     with torch.no_grad():
@@ -60,13 +70,11 @@ def main() -> None:
                     else:
                         logits[0, -1, token_id] *= repetition_penalty
 
-            # Apply temperature
-            logits = logits / temperature
-
-            probs = torch.softmax(logits[:, -1, :], dim=-1)
-
-            # Sample from distribution instead of greedy argmax
-            next_id = torch.multinomial(probs, num_samples=1)
+            if temperature == 0.0:
+                next_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+            else:
+                probs = torch.softmax(logits[:, -1, :] / temperature, dim=-1)
+                next_id = torch.multinomial(probs, num_samples=1)
 
             idx = torch.cat([idx, next_id], dim=1)
             if next_id.item() == EOS_ID:

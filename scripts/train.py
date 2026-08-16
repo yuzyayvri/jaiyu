@@ -111,16 +111,16 @@ def main():
         optimizer.step()
 
         if step % 10 == 0:
-            print(f"step {step}: train loss {loss.item():.4f}")
+            print(f"step {step}: train loss {loss.item():.4f}", flush=True)
 
         if step % args.eval_interval == 0:
             eval_loss = evaluate(model, eval_loader, device)
-            print(f"step {step}: eval loss {eval_loss:.4f}")
+            print(f"step {step}: eval loss {eval_loss:.4f}", flush=True)
 
         if step % args.save_interval == 0:
             ckpt_path = output_dir / f"step_{step}.pt"
             torch.save(model.state_dict(), ckpt_path)
-            print(f"saved checkpoint to {ckpt_path}")
+            print(f"saved checkpoint to {ckpt_path}", flush=True)
 
 
 if __name__ == "__main__":

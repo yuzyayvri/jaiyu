@@ -1,6 +1,6 @@
-vocab_size: 3000
+vocab_size: 413
 block_size: 512
-n_layer: 13
+n_layer: 14
 n_head: 8
 n_embd: 384
 dropout: 0.0
