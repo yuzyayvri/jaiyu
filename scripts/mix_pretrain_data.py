@@ -19,8 +19,8 @@ EOS_TOKEN = "<eos>"
 # name -> (share of total tokens, source jsonl or None for generated)
 MIX = {
     "synthetic": (0.25, Path("data/pretrain/math_corpus.jsonl")),
-    "openwebmath": (0.20, Path("data/pretrain/external/openwebmath.jsonl")),
-    "math_qa": (0.15, Path("data/pretrain/external/math_qa.jsonl")),
+    "openwebmath": (0.32, Path("data/pretrain/external/openwebmath.jsonl")),
+    "math_qa": (0.03, Path("data/pretrain/external/math_qa.jsonl")),
     "calc": (0.15, None),
     "code": (0.10, None),
     "tinystories": (0.10, Path("data/pretrain/external/tinystories.jsonl")),
