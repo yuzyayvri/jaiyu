@@ -109,7 +109,15 @@ def main():
     train_ds = TokenDataset(args.train_data, block_size=config.block_size)
     assert len(train_ds) > 0, "Training dataset is empty"
 
-    do_eval = not args.no_eval and Path(args.eval_data).exists()
+    # Missing eval data is an error rather than a silent downgrade: a long run
+    # that quietly trains blind is only discovered once it is over.
+    do_eval = not args.no_eval
+    if do_eval and not Path(args.eval_data).exists():
+        raise SystemExit(
+            f"{args.eval_data} not found. Build it with scripts/make_pretrain_data.py "
+            f"and scripts/pack_jsonl.py, or pass --no-eval to train without it."
+        )
+
     eval_loader = None
     datasets = [("train", train_ds)]
     if do_eval:
@@ -118,7 +126,7 @@ def main():
         datasets.append(("eval", eval_ds))
         eval_loader = DataLoader(eval_ds, batch_size=args.batch_size, shuffle=False)
     else:
-        print("No eval data provided, skipping evaluation.", flush=True)
+        print("--no-eval set, training without evaluation.", flush=True)
 
     # Out-of-range ids are an out-of-bounds embedding lookup: on CPU that's an
     # IndexError, on ROCm it faults the GPU queue with an unreadable HSA error.
