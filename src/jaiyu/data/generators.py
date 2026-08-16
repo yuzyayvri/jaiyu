@@ -31,83 +31,41 @@ def _nonzero(rng: random.Random, lo: int, hi: int) -> int:
             return n
 
 
-_PLACE_NAMES = ["ones", "tens", "hundreds", "thousands"]
-
-
-def _place_digits(n: int) -> list[int]:
-    """Digits of n from least to most significant, one per entry in _PLACE_NAMES."""
-    digits = []
-    for p in range(len(_PLACE_NAMES)):
-        digits.append((n // (10**p)) % 10)
-    return digits
-
-
-def _addition_thought(a: int, b: int, result: int) -> str:
-    da, db = _place_digits(a), _place_digits(b)
-    parts = []
-    for i, place in enumerate(_PLACE_NAMES):
-        mult = 10**i
-        av, bv = da[i] * mult, db[i] * mult
-        if av == 0 and bv == 0:
-            continue
-        parts.append(f"Add the {place}: {av} + {bv} = {av + bv}.")
-    combine = " + ".join(str(da[i] * 10**i + db[i] * 10**i) for i in range(len(_PLACE_NAMES)))
-    parts.append(f"Combine: {combine} = {result}.")
-    return " ".join(parts)
-
-
-def _subtraction_thought(a: int, b: int, result: int) -> str:
-    """Assumes a >= b, so no negative intermediate results."""
-    da, db = _place_digits(a), _place_digits(b)
-    borrow_in = 0
-    diffs = []
-    parts = []
-    for i, place in enumerate(_PLACE_NAMES):
-        mult = 10**i
-        ai, bi = da[i] - borrow_in, db[i]
-        borrowed = ai < bi
-        if borrowed:
-            ai += 10
-        d = ai - bi
-        diffs.append(d * mult)
-        note = " (after borrowing 1 from the next place)" if borrowed else ""
-        parts.append(f"Subtract the {place}: {ai} - {bi} = {d}{note}.")
-        borrow_in = 1 if borrowed else 0
-    combine = " + ".join(str(v) for v in reversed(diffs)) or "0"
-    parts.append(f"Combine: {combine} = {result}.")
-    return " ".join(parts)
-
-
 def generate_arithmetic(seed: int, n: int = 100) -> list[MathExample]:
+    """Direct one-step arithmetic on operands in [0, 100].
+
+    The reasoning step restates the question and gives the result, so every
+    number in the Thought is derived from the Question. No place-value
+    decomposition: the intermediate digits it invented were the main source of
+    hallucinated numbers at this model size.
+    """
     rng = random.Random(seed)
     ops = ["+", "-", "*", "/"]
     examples = []
     for i in range(n):
         op = rng.choice(ops)
 
-        if op in ("+", "-"):
-            a = rng.randint(0, 9999)
-            if op == "+":
-                b = rng.randint(0, 9999)
-                result = a + b
-                thought = _addition_thought(a, b, result)
-            else:
-                # b <= a keeps the difference non-negative.
-                b = rng.randint(0, a)
-                result = a - b
-                thought = _subtraction_thought(a, b, result)
+        if op == "+":
+            a, b = rng.randint(0, 100), rng.randint(0, 100)
+            result = a + b
+            thought = f"Calculate {a} + {b}. The sum is {result}."
+            difficulty = 1
+        elif op == "-":
+            a = rng.randint(0, 100)
+            b = rng.randint(0, a)  # b <= a keeps the difference non-negative
+            result = a - b
+            thought = f"Calculate {a} - {b}. The difference is {result}."
             difficulty = 1
         elif op == "*":
-            a = rng.randint(0, 999)
-            b = rng.randint(0, 999)
+            a, b = rng.randint(0, 100), rng.randint(0, 100)
             result = a * b
-            thought = f"Multiply {a} by {b}: {a} * {b} = {result}."
+            thought = f"Multiply {a} by {b}. The product is {result}."
             difficulty = 2
         else:
-            b = rng.randint(1, 999)
-            a = b * rng.randint(0, 999)  # ensure exact division
+            b = rng.randint(1, 100)
+            a = b * rng.randint(0, 100 // b)  # exact division, a <= 100
             result = a // b
-            thought = f"Divide {a} by {b}: {a} / {b} = {result}."
+            thought = f"Divide {a} by {b}. The quotient is {result}."
             difficulty = 2
 
         question = f"What is {a} {op} {b}?"
@@ -173,26 +131,18 @@ def generate_linear_equations(seed: int, n: int = 100) -> list[MathExample]:
     rng = random.Random(seed)
     examples = []
     for i in range(n):
-        a = rng.randint(1, 50)
-        b = rng.randint(-1000, 1000)
+        a = rng.randint(1, 10)
+        b = _nonzero(rng, -50, 50)
         x = rng.randint(-15, 15)
-        c = a * x + b
+        c = a * x + b  # so (c - b) / a == x exactly
 
-        lhs_sign = "+" if b >= 0 else "-"
-        lhs = f"{a}x {lhs_sign} {abs(b)}"
-        if b >= 0:
-            verb, prep, amt, side_op = "subtract", "from", b, "-"
-        else:
-            verb, prep, amt, side_op = "add", "to", -b, "+"
-        new_c = c - b
-
+        lhs = f"{a}x {'+' if b >= 0 else '-'} {abs(b)}"
+        # Every number below comes straight from the question: the coefficient
+        # `a` is repeated in both steps so it cannot drift mid-solution.
         thought = (
-            f"First, {verb} {amt} {prep} both sides. "
-            f"{lhs} {side_op} {amt} = {c} {side_op} {amt}. "
-            f"This simplifies to {a}x = {new_c}. "
-            f"Next, divide both sides by {a}. "
-            f"{a}x / {a} = {new_c} / {a}. "
-            f"This gives x = {x}."
+            f"Solve for x. "
+            f"Move {b} to the other side: {a}x = {c - b}. "
+            f"Divide both sides by {a}: x = {x}."
         )
         question = f"Solve {lhs} = {c}."
         text = f"Question: {question}\nThought: {thought}\n"
