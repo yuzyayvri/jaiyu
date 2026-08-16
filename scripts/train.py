@@ -46,6 +46,8 @@ def parse_args():
     p.add_argument("--weight-decay", type=float, default=0.1)
     p.add_argument("--eval-interval", type=int, default=100)
     p.add_argument("--save-interval", type=int, default=1000)
+    p.add_argument("--keep-checkpoints", type=int, default=3,
+                   help="Delete all but the N most recent checkpoints. 0 keeps every one.")
     p.add_argument("--output-dir", default="outputs/checkpoints")
     p.add_argument("--seed", type=int, default=26)
     p.add_argument("--resume-from", default=None, help="Checkpoint path to load weights (and optimizer state) from.")
@@ -156,6 +158,14 @@ def main():
         ckpt_path = output_dir / f"step_{step}.pt"
         torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(), "step": step}, ckpt_path)
         print(f"saved checkpoint to {ckpt_path}", flush=True)
+        # Each checkpoint carries optimizer state, so it is ~3x the model size.
+        # A long run would otherwise fill the disk with checkpoints nobody
+        # reads; only the most recent ones are ever used to resume.
+        if args.keep_checkpoints > 0:
+            saved = sorted(output_dir.glob("step_*.pt"),
+                           key=lambda p: int(p.stem.split("_")[1]))
+            for old in saved[:-args.keep_checkpoints]:
+                old.unlink()
 
     model.train()
     window_start = time.time()
