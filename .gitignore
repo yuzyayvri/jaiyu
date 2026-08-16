@@ -18,3 +18,11 @@ outputs/*
 
 CLAUDE.md
 gpucore.*
+
+data/intermediate/*
+!data/intermediate/.gitkeep
+data/pretrain/*
+!data/pretrain/.gitkeep
+data/tokenizer/*
+!data/tokenizer/.gitkeep
+checkpoints/

@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Personal, non-commercial research project: a ~26M-parameter math-focused language model trained locally."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Non-commercial, personal research use only" }
+license = { text = "MIT" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

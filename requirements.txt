@@ -8,3 +8,8 @@ numpy
 tokenizers
 pyyaml
 tqdm
+datasets
+sympy
+
+# Dev.
+pytest

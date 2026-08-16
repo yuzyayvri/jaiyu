@@ -4,7 +4,6 @@ Personal, non-commercial research project: grow a ~26M-parameter math-focused
 language model from scratch, locally, and observe how far it can be pushed
 in mathematical reasoning.
 
-See `CLAUDE.md` for full project philosophy and constraints.
 
 ## Hardware
 
@@ -46,3 +45,7 @@ make tokenize
 make train
 make eval
 ```
+
+## License
+
+MIT. See `LICENSE`.
