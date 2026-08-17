@@ -23,7 +23,7 @@ from tokenizers import Tokenizer
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from jaiyu.calculator import join_digits, space_digits  # noqa: E402
+from jaiyu.calculator import join_digits, pending_expr, result_span, space_digits  # noqa: E402
 from jaiyu.model.config import load_config  # noqa: E402
 from jaiyu.model.transformer import GPT  # noqa: E402
 
@@ -81,7 +81,35 @@ def numbers_in(text: str) -> list[int]:
     return [int(n) for n in _NUMBER.findall(text)]
 
 
-def extract_answer(out: str, a: int, b: int) -> int | None:
+def prompt_for(a: int, b: int, op: str, style: str) -> str:
+    """The prompt in the shape the checkpoint was trained on.
+
+    A pre-trained model continues raw text ("84 - 26 = "); a fine-tuned one
+    answers the question format it was tuned on. Using the wrong one measures
+    the mismatch instead of the model.
+    """
+    if style == "bare":
+        return f"{a} {op} {b} = "
+    verb = {"+": "+", "-": "-", "*": "*", "/": "/"}[op]
+    return f"Question: What is {a} {verb} {b}?\nThought:"
+
+
+_ANSWER_LINE = re.compile(r"Answer:([^\n]*)")
+
+
+def extract_answer(out: str, a: int, b: int, style: str = "bare") -> int | None:
+    """The model's answer, or None if it never produced one."""
+    if style == "question":
+        # A fine-tuned trace runs for many lines and ends on "Answer: N".
+        line = _ANSWER_LINE.search(out)
+        if line is None:
+            return None
+        numbers = numbers_in(line.group(1))
+        return numbers[0] if numbers else None
+    return _extract_bare_answer(out, a, b)
+
+
+def _extract_bare_answer(out: str, a: int, b: int) -> int | None:
     """The model's answer, or None if it never produced one.
 
     Two output shapes appear in the pre-training corpus and both are accepted:
@@ -136,13 +164,57 @@ def generate(model, tokenizer, prompts: list[str], max_new_tokens: int,
     return out
 
 
+MAX_TOOL_CALLS = 8  # a stuck model can emit <calc> forever
+
+
+@torch.no_grad()
+def generate_with_tool(model, tokenizer, prompt: str, max_new_tokens: int,
+                       device, block_size: int) -> str:
+    """Greedy continuation where the runtime answers every `<calc>` call.
+
+    A model fine-tuned with results masked out stops after `</calc>` and waits
+    for the value, so scoring it without the calculator measures nothing. One
+    sequence at a time, because each injection changes the length.
+    """
+    ids = tokenizer.encode(space_digits(prompt)).ids
+    prompt_len = len(ids)
+    x = torch.tensor([ids], dtype=torch.long, device=device)
+    eos_id = tokenizer.get_vocab().get("<eos>")
+    tool_calls = 0
+
+    for _ in range(max_new_tokens):
+        logits, _ = model(x[:, -block_size:])
+        next_id = logits[:, -1].argmax(-1, keepdim=True)
+        x = torch.cat([x, next_id], dim=1)
+        if next_id.item() == eos_id:
+            break
+
+        completion = tokenizer.decode(x[0, prompt_len:].tolist(), skip_special_tokens=False)
+        expr = pending_expr(completion) if tool_calls < MAX_TOOL_CALLS else None
+        if expr is not None:
+            tool_calls += 1
+            fed = tokenizer.encode(" " + result_span(expr)).ids
+            x = torch.cat([x, torch.tensor([fed], dtype=torch.long, device=device)], dim=1)
+
+    return tokenizer.decode(x[0, prompt_len:].tolist(), skip_special_tokens=False)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--checkpoint", required=True)
     p.add_argument("--tokenizer", default="data/tokenizer/jaiyu_math_tokenizer.json")
     p.add_argument("--num-problems", type=int, default=100,
                    help="Problems per category.")
-    p.add_argument("--max-new-tokens", type=int, default=28)
+    p.add_argument("--max-new-tokens", type=int, default=None,
+                   help="Default: 28 for bare prompts, 200 for question prompts, "
+                        "whose traces run for many steps before the answer.")
+    p.add_argument("--prompt-style", choices=["bare", "question"], default="bare",
+                   help="'bare' continues \"84 - 26 = \" (pre-trained models); "
+                        "'question' asks in the fine-tuning format.")
+    p.add_argument("--tool", action="store_true",
+                   help="Answer the model's <calc> calls with the real calculator, as "
+                        "inference does. Required for models fine-tuned with results "
+                        "masked out, which stop and wait for the value.")
     p.add_argument("--batch-size", type=int, default=50)
     p.add_argument("--seed", type=int, default=26)
     p.add_argument("--categories", nargs="+", default=list(CATEGORIES),
@@ -154,6 +226,9 @@ def main() -> None:
     for name in args.categories:
         if name not in CATEGORIES:
             raise SystemExit(f"unknown category {name!r}; choose from {list(CATEGORIES)}")
+
+    if args.max_new_tokens is None:
+        args.max_new_tokens = 28 if args.prompt_style == "bare" else 200
 
     tokenizer = Tokenizer.from_file(args.tokenizer)
     config = load_config()
@@ -179,10 +254,16 @@ def main() -> None:
         correct, failures = 0, []
         for start in range(0, len(problems), args.batch_size):
             batch = problems[start:start + args.batch_size]
-            outs = generate(model, tokenizer, [f"{a} {op} {b} = " for a, b in batch],
-                            args.max_new_tokens, device, config.block_size)
+            prompts = [prompt_for(a, b, op, args.prompt_style) for a, b in batch]
+            if args.tool:
+                outs = [generate_with_tool(model, tokenizer, p, args.max_new_tokens,
+                                           device, config.block_size) for p in prompts]
+            else:
+                outs = generate(model, tokenizer, prompts, args.max_new_tokens,
+                                device, config.block_size)
             for (a, b), out in zip(batch, outs):
-                got, want = extract_answer(out, a, b), truth(a, b, op)
+                got = extract_answer(out, a, b, args.prompt_style)
+                want = truth(a, b, op)
                 if got == want:
                     correct += 1
                 elif len(failures) < args.show_failures:

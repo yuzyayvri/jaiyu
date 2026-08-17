@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from eval_math import CATEGORIES, extract_answer, make_problem, truth  # noqa: E402
+from eval_math import CATEGORIES, extract_answer, make_problem, prompt_for, truth  # noqa: E402
 
 
 def test_extracts_from_result_span():
@@ -88,3 +88,19 @@ def test_bare_answer_equal_to_an_operand_survives():
     # "8 + 0 = 8": the answer repeats an operand and is not an echo.
     assert extract_answer("8 ", 8, 0) == 8
     assert extract_answer("2 0 ", 20, 0) == 20
+
+
+def test_question_style_reads_the_answer_line():
+    out = (" Add the ones: <calc> 5 + 7 </calc> <result> 1 2 </result>.\n"
+           "Answer: 1 1 7 2\n")
+    assert extract_answer(out, 865, 307, style="question") == 1172
+
+
+def test_question_style_without_an_answer_line_is_none():
+    assert extract_answer(" Add the ones: <calc> 5 + 7 </calc>", 865, 307,
+                          style="question") is None
+
+
+def test_prompt_shapes():
+    assert prompt_for(84, 26, "-", "bare") == "84 - 26 = "
+    assert prompt_for(84, 26, "-", "question") == "Question: What is 84 - 26?\nThought:"
