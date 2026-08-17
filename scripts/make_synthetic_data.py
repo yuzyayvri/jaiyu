@@ -12,6 +12,7 @@ import random
 from pathlib import Path
 
 from jaiyu.data.generators import (
+    MathExample,
     generate_arithmetic,
     generate_fractions,
     generate_linear_equations,
@@ -29,12 +30,56 @@ def _split_counts(total: int, n_groups: int) -> list[int]:
     return [base + (1 if i < remainder else 0) for i in range(n_groups)]
 
 
+def _replay_examples(path: Path, fraction: float, n_train: int,
+                     rng: random.Random) -> list[MathExample]:
+    """Pre-training text carried into fine-tuning to limit forgetting.
+
+    Fine-tuning only on question-and-answer maths pulls the model away from the
+    prose, code and formula text it spent a billion tokens learning. A slice of
+    the original corpus keeps that alive; it has no question or answer, so it
+    is stored as bare text the packer emits unchanged.
+    """
+    if not path.exists():
+        raise SystemExit(f"{path} not found; generate it with scripts/make_pretrain_data.py.")
+
+    lines = [json.loads(line)["text"] for line in path.open() if line.strip()]
+    if not lines:
+        raise SystemExit(f"{path} is empty.")
+
+    n_replay = int(n_train * fraction / max(1e-9, 1 - fraction))
+    chosen = [rng.choice(lines) for _ in range(n_replay)]
+    return [
+        MathExample(
+            id=f"replay_{i}",
+            text=text if text.endswith("\n") else text + "\n",
+            topic="replay",
+            difficulty=rng.randint(1, 4),
+            reasoning=[],
+            source="pretrain_replay",
+            split="train",
+            answer="",
+        )
+        for i, text in enumerate(chosen)
+    ]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir", type=Path, default=Path("data/intermediate/synthetic"))
-    parser.add_argument("--num-train", type=int, default=10000)
-    parser.add_argument("--num-eval", type=int, default=500)
+    # The model this data fine-tunes has seen a billion tokens; ten thousand
+    # examples is enough to teach the answer format and not enough to teach a
+    # procedure it does not already have.
+    parser.add_argument("--num-train", type=int, default=60000)
+    parser.add_argument("--num-eval", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=26)
+    parser.add_argument("--curriculum", action="store_true",
+                        help="Order training examples easiest-first by difficulty "
+                             "instead of shuffling, so early steps see foundations.")
+    parser.add_argument("--replay", type=Path, default=None,
+                        help="Pre-training corpus (jsonl) to mix in, keeping the prose "
+                             "and code fluency that fine-tuning on maths alone erodes.")
+    parser.add_argument("--replay-fraction", type=float, default=0.15,
+                        help="Share of the training set drawn from --replay.")
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -65,6 +110,17 @@ def main() -> None:
     # Repetition within train is fine; only eval must stay disjoint from train.
     train_texts = {ex.text for ex in train_examples}
     eval_examples = [ex for ex in eval_examples if ex.text not in train_texts]
+
+    if args.replay:
+        train_examples.extend(_replay_examples(args.replay, args.replay_fraction,
+                                               len(train_examples), rng))
+
+    if args.curriculum:
+        # Stable sort: difficulty decides the order, and examples of equal
+        # difficulty keep the shuffle they already have.
+        train_examples.sort(key=lambda ex: ex.difficulty)
+    else:
+        rng.shuffle(train_examples)
 
     with train_path.open("w") as train_f, eval_path.open("w") as eval_f:
         for ex in train_examples:

@@ -85,7 +85,7 @@ def generate(model, config, tokenizer, prompt, device, seed, temperature, max_ne
             break
         # Training examples are "Thought: ...\nAnswer: X\n" -- two newlines.
         # Stop once both are out, or if the model starts a new example.
-        completion = tokenizer.decode(idx[0, prompt_len:].tolist())
+        completion = tokenizer.decode(idx[0, prompt_len:].tolist(), skip_special_tokens=False)
 
         # The model asked the calculator a question: answer it and let the model
         # read the result instead of guessing digits.
@@ -101,7 +101,7 @@ def generate(model, config, tokenizer, prompt, device, seed, temperature, max_ne
         if completion.count("\n") >= 2 or "Question:" in completion:
             break
 
-    completion = tokenizer.decode(idx[0, prompt_len:].tolist())
+    completion = tokenizer.decode(idx[0, prompt_len:].tolist(), skip_special_tokens=False)
     full_text = tokenizer.decode(idx[0].tolist())
     return full_text, completion
 

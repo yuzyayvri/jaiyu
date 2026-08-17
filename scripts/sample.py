@@ -29,6 +29,8 @@ def parse_args():
     p.add_argument("--raw", action="store_true",
                    help="Use the prompt verbatim instead of wrapping it in the training format.")
     p.add_argument("--tokenizer", default="data/tokenizer/jaiyu_math_tokenizer.json")
+    p.add_argument("--hide-tags", action="store_true",
+                   help="Hide <calc>/<result> spans, showing only the prose.")
     return p.parse_args()
 
 
@@ -92,7 +94,7 @@ def main() -> None:
 
             # The model asked the calculator a question: answer it and let the
             # model read the result instead of guessing digits.
-            completion = tokenizer.decode(idx[0, prompt_len:].tolist())
+            completion = tokenizer.decode(idx[0, prompt_len:].tolist(), skip_special_tokens=False)
             expr = pending_expr(completion) if tool_calls < MAX_TOOL_CALLS else None
             if expr is not None:
                 tool_calls += 1
@@ -102,7 +104,9 @@ def main() -> None:
                 )
 
     output_ids = idx[0].tolist()
-    print(join_digits(tokenizer.decode(output_ids)))
+    # Tool spans stay visible: hiding them is what made a dead calculator look
+    # like a working one for as long as it did.
+    print(join_digits(tokenizer.decode(output_ids, skip_special_tokens=args.hide_tags)))
 
 
 if __name__ == "__main__":

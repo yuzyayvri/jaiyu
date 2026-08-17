@@ -15,7 +15,18 @@ from jaiyu.model.config import load_config
 from jaiyu.model.transformer import GPT
 
 
+IGNORE_INDEX = -100  # cross_entropy skips these positions
+
+
 class TokenDataset(Dataset):
+    """Packed token sequences, optionally with positions excluded from the loss.
+
+    A sibling "<name>.mask.npy" of the same length marks which tokens the model
+    is trained to predict. Fine-tuning data uses it to exclude calculator
+    results: those arrive from the runtime at inference, and training the model
+    to produce them teaches it to guess digits instead of calling the tool.
+    """
+
     def __init__(self, path: str, block_size: int = 512):
         tokens = np.load(path)
 
@@ -28,12 +39,30 @@ class TokenDataset(Dataset):
         n_seq = (len(tokens) // (block_size + 1)) * (block_size + 1)
         self.data = torch.from_numpy(tokens[:n_seq].astype(np.int64)).view(-1, block_size + 1)
 
+        mask_path = Path(path).with_suffix(".mask.npy")
+        self.mask = None
+        if mask_path.exists():
+            mask = np.load(mask_path)
+            if mask.ndim == 2:
+                mask = mask.flatten()
+            if len(mask) != len(tokens):
+                raise SystemExit(
+                    f"{mask_path} has {len(mask):,} entries but {path} has "
+                    f"{len(tokens):,} tokens; regenerate them together."
+                )
+            self.mask = torch.from_numpy(mask[:n_seq].astype(bool)).view(-1, block_size + 1)
+            print(f"loss mask: {100 * self.mask.float().mean():.1f}% of tokens are trained on",
+                  flush=True)
+
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
         seq = self.data[idx]
-        return seq[:-1], seq[1:]
+        targets = seq[1:]
+        if self.mask is not None:
+            targets = targets.masked_fill(~self.mask[idx][1:], IGNORE_INDEX)
+        return seq[:-1], targets
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -51,6 +80,10 @@ def parse_args():
     p.add_argument("--output-dir", default="outputs/checkpoints")
     p.add_argument("--seed", type=int, default=26)
     p.add_argument("--resume-from", default=None, help="Checkpoint path to load weights (and optimizer state) from.")
+    p.add_argument("--init-from", default=None,
+                   help="Checkpoint to take weights from, discarding its optimizer state "
+                        "and step counter. This is how fine-tuning starts from a "
+                        "pre-trained model; --resume-from continues that same run instead.")
     p.add_argument("--tokenizer", default="data/tokenizer/jaiyu_math_tokenizer.json",
                    help="Tokenizer whose vocab_size overrides the model config.")
     p.add_argument("--fp16", action="store_true", help="fp16 mixed precision + GradScaler (for T4-class GPUs).")
@@ -144,6 +177,10 @@ def main():
         model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay
     )
 
+    if args.resume_from and args.init_from:
+        raise SystemExit("--resume-from continues a run and --init-from starts a new "
+                         "one from its weights; pass only one.")
+
     start_step = 0
     if args.resume_from:
         ckpt = torch.load(args.resume_from, map_location=device, weights_only=True)
@@ -155,6 +192,24 @@ def main():
         else:  # legacy checkpoints held a bare state_dict
             model.load_state_dict(ckpt)
         print(f"Resumed from {args.resume_from} at step {start_step}", flush=True)
+        # The step counter is absolute, so a checkpoint past --max-steps means
+        # the loop below has nothing to do. Silently exiting there looks exactly
+        # like a completed run, which is how a fine-tune can appear to happen
+        # without a single gradient step.
+        if start_step >= args.max_steps:
+            raise SystemExit(
+                f"checkpoint is at step {start_step} but --max-steps is "
+                f"{args.max_steps}, so there is nothing left to run. Raise "
+                f"--max-steps to continue this run, or use --init-from to start "
+                f"a new run (fine-tuning) from these weights."
+            )
+    elif args.init_from:
+        # Fine-tuning starts a new run: the weights carry over, the optimizer
+        # state and step counter do not, so the schedule warms up from zero
+        # rather than resuming a decayed pre-training curve.
+        ckpt = torch.load(args.init_from, map_location=device, weights_only=True)
+        model.load_state_dict(ckpt["model"] if "model" in ckpt else ckpt)
+        print(f"Initialised from {args.init_from} (weights only, step 0)", flush=True)
     else:
         print("Starting from random initialization", flush=True)
 

@@ -56,10 +56,11 @@ def test_arithmetic_thought_matches_question():
         # borrowing), so only its final value has to equal the answer.
         assert_calcs_are_correct(e.text)
         assert int(e.answer) == OPS[op](int(qa), int(qb))
-        # Operands stay small: at most two digits, except a division dividend,
-        # which is built as a product of two numbers up to 12.
-        assert 0 < int(qa) <= (144 if op == "/" else 99)
-        assert 0 < int(qb) <= 99
+        # Operands run up to four digits, deliberately past where the
+        # pre-trained model stops coping. Multiplication and division keep one
+        # side small so the traces stay short enough to learn from.
+        assert 0 < int(qa) <= 9999 * 12
+        assert 0 < int(qb) <= (12 if op in "*/" else 9999)
 
 
 def test_linear_equations_thought_matches_question():

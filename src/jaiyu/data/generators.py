@@ -41,6 +41,111 @@ def _calc(expr: str, value) -> str:
     return f"<calc> {expr} </calc> <result> {value} </result>"
 
 
+# Column names, least significant first. Four places cover every number the
+# generators produce.
+PLACES = ["ones", "tens", "hundreds", "thousands"]
+
+# Digit counts to draw from, weighted toward the widths the model is weakest
+# at while keeping the easy cases present so they are not forgotten.
+WIDTHS = [1, 2, 2, 3, 3, 3, 4]
+
+
+def _with_digits(rng: random.Random, width: int) -> int:
+    """A random number with exactly `width` digits."""
+    return rng.randint(10 ** (width - 1), 10 ** width - 1) if width > 1 else rng.randint(1, 9)
+
+
+def _digits(n: int) -> list[int]:
+    """Digits of `n`, least significant first."""
+    return [int(d) for d in reversed(str(n))]
+
+
+def _column_add(a: int, b: int) -> str:
+    """Column-by-column addition trace, right to left, carrying as it goes.
+
+    Written for any width rather than for two digits specifically: a model
+    shown only the tens-and-ones version learns that shape instead of the
+    procedure, and stops dead at three digits.
+    """
+    da, db = _digits(a), _digits(b)
+    width = max(len(da), len(db))
+    da += [0] * (width - len(da))
+    db += [0] * (width - len(db))
+
+    steps, columns, carry = [], [], 0
+    for place in range(width):
+        carry_in = carry
+        raw = da[place] + db[place] + carry_in
+        digit, carry = raw % 10, raw // 10
+        expr = f"{da[place]} + {db[place]}"
+        if carry_in:
+            expr += f" + {carry_in}"
+        steps.append(f"Add the {PLACES[place]}: {_calc(expr, raw)}.")
+        if carry:
+            steps.append(f"Write down {digit}, carry {carry}.")
+        columns.append(digit * 10 ** place)
+    if carry:
+        columns.append(carry * 10 ** width)
+        steps.append(f"The final carry gives a leading {carry}.")
+
+    parts = [str(c) for c in reversed(columns) if c] or ["0"]
+    steps.append(f"Combine: {_calc(' + '.join(parts), a + b)}.")
+    return " ".join(steps)
+
+
+def _column_sub(a: int, b: int) -> str:
+    """Column-by-column subtraction trace with explicit borrowing (a >= b)."""
+    da, db = _digits(a), _digits(b)
+    da += [0] * (len(db) - len(da))
+    db += [0] * (len(da) - len(db))
+
+    steps, columns = [], []
+    for place in range(len(da)):
+        top = da[place]
+        if top < db[place]:
+            # Borrow from the next column that has something to give.
+            source = next(p for p in range(place + 1, len(da)) if da[p] > 0)
+            for p in range(place + 1, source):
+                da[p] = 9  # each skipped 0 becomes 9
+            da[source] -= 1
+            top += 10
+            steps.append(
+                f"Subtract the {PLACES[place]}: {da[place]} - {db[place]} is not "
+                f"possible, so borrow from the {PLACES[source]}, making it {top}."
+            )
+            steps.append(f"{_calc(f'{top} - {db[place]}', top - db[place])}.")
+        else:
+            steps.append(
+                f"Subtract the {PLACES[place]}: "
+                f"{_calc(f'{top} - {db[place]}', top - db[place])}."
+            )
+        columns.append((top - db[place]) * 10 ** place)
+
+    parts = [str(c) for c in reversed(columns) if c] or ["0"]
+    steps.append(f"Combine: {_calc(' + '.join(parts), a - b)}.")
+    return " ".join(steps)
+
+
+def _long_multiply(a: int, b: int) -> str:
+    """Multiplication by splitting the larger factor into its place values."""
+    if a < b:
+        a, b = b, a
+    parts = [d * 10 ** p for p, d in enumerate(_digits(a)) if d]
+    if len(parts) == 1:
+        return f"Multiply: {_calc(f'{a} * {b}', a * b)}."
+
+    steps = [f"Split {a} into {' + '.join(str(p) for p in reversed(parts))}."]
+    products = []
+    for part in reversed(parts):
+        products.append(part * b)
+        steps.append(f"{_calc(f'{part} * {b}', part * b)}.")
+    steps.append(
+        f"Add the partial products: "
+        f"{_calc(' + '.join(str(p) for p in products), a * b)}."
+    )
+    return " ".join(steps)
+
+
 def generate_arithmetic(seed: int, n: int = 100) -> list[MathExample]:
     """Direct arithmetic with a place-value trace for +/- and a one-step
     trace for */÷, so every number in the Thought is derived from the
@@ -63,71 +168,34 @@ def generate_arithmetic(seed: int, n: int = 100) -> list[MathExample]:
             thought = f"{verb} the single digits: {a} {op} {b} = {result}."
             difficulty = 1
         elif op == "+":
-            a, b = rng.randint(10, 99), rng.randint(10, 99)
+            # Widths are sampled rather than fixed at two digits: pre-training
+            # left the model fluent to two digits and helpless at three, which
+            # is what a corpus of only two-digit examples teaches.
+            wa, wb = rng.choice(WIDTHS), rng.choice(WIDTHS)
+            a, b = _with_digits(rng, wa), _with_digits(rng, wb)
             result = a + b
-            a_tens, a_ones = divmod(a, 10)
-            b_tens, b_ones = divmod(b, 10)
-            raw_ones_sum = a_ones + b_ones
-            carry = 1 if raw_ones_sum >= 10 else 0
-            ones_sum = raw_ones_sum - 10 * carry
-            tens_sum = a_tens + b_tens + carry
-
-            if carry:
-                thought = (
-                    f"Add the ones: {_calc(f'{a_ones} + {b_ones}', raw_ones_sum)}. "
-                    f"Write down {ones_sum}, carry {carry} to the tens. "
-                    "Add the tens: "
-                    f"{_calc(f'{a_tens} + {b_tens} + {carry}', tens_sum)}. "
-                    f"Combine: {_calc(f'{tens_sum * 10} + {ones_sum}', result)}."
-                )
-            else:
-                thought = (
-                    f"Add the ones: {_calc(f'{a_ones} + {b_ones}', ones_sum)}. "
-                    f"Add the tens: {_calc(f'{a_tens} + {b_tens}', tens_sum)}. "
-                    f"Combine: {_calc(f'{tens_sum * 10} + {ones_sum}', result)}."
-                )
-            difficulty = 1
+            thought = _column_add(a, b)
+            difficulty = max(wa, wb)
         elif op == "-":
-            a = rng.randint(10, 99)
-            b = rng.randint(10, a)  # b <= a keeps the difference non-negative
+            wa = rng.choice(WIDTHS)
+            a = _with_digits(rng, wa)
+            b = rng.randint(1, a)  # b <= a keeps the difference non-negative
             result = a - b
-            a_tens, a_ones = divmod(a, 10)
-            b_tens, b_ones = divmod(b, 10)
-
-            if a_ones < b_ones:
-                borrowed_tens = a_tens - 1
-                borrowed_ones = a_ones + 10
-                ones_diff = borrowed_ones - b_ones
-                tens_diff = borrowed_tens - b_tens
-                thought = (
-                    f"Subtract the ones: {a_ones} - {b_ones} is not possible. "
-                    f"Borrow 1 from the tens, making the {a_tens} a {borrowed_tens}, "
-                    f"and the {a_ones} a {borrowed_ones}. "
-                    f"{_calc(f'{borrowed_ones} - {b_ones}', ones_diff)}. "
-                    "Subtract the tens: "
-                    f"{_calc(f'{borrowed_tens} - {b_tens}', tens_diff)}. "
-                    f"Combine: {_calc(f'{tens_diff * 10} + {ones_diff}', result)}."
-                )
-            else:
-                ones_diff = a_ones - b_ones
-                tens_diff = a_tens - b_tens
-                thought = (
-                    f"Subtract the ones: {_calc(f'{a_ones} - {b_ones}', ones_diff)}. "
-                    f"Subtract the tens: {_calc(f'{a_tens} - {b_tens}', tens_diff)}. "
-                    f"Combine: {_calc(f'{tens_diff * 10} + {ones_diff}', result)}."
-                )
-            difficulty = 1
+            thought = _column_sub(a, b)
+            difficulty = wa
         elif op == "*":
-            a, b = rng.randint(2, 12), rng.randint(2, 12)
+            wa = rng.choice([1, 1, 2, 2, 3])
+            a = _with_digits(rng, wa)
+            b = rng.randint(2, 12)
             result = a * b
-            thought = f"Multiply: {_calc(f'{a} * {b}', result)}."
-            difficulty = 2
+            thought = _long_multiply(a, b)
+            difficulty = 2 + (wa > 1) + (wa > 2)
         else:
             b = rng.randint(2, 12)
-            a = b * rng.randint(2, 12)
+            a = b * _with_digits(rng, rng.choice([1, 1, 2, 2, 3]))
             result = a // b
             thought = f"Divide: {_calc(f'{a} / {b}', result)}."
-            difficulty = 2
+            difficulty = 2 if a < 100 else 3
 
         question = f"What is {a} {op} {b}?"
         text = f"Question: {question}\nThought: {thought}\n"
