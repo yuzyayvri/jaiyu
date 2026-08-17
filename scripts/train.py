@@ -270,6 +270,11 @@ def main():
         if step % args.save_interval == 0:
             save(step)
 
+    # The last steps are usually the ones worth keeping, and they are lost
+    # whenever --max-steps is not a multiple of --save-interval.
+    if args.max_steps % args.save_interval != 0:
+        save(args.max_steps)
+
 
 if __name__ == "__main__":
     main()
