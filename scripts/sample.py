@@ -6,12 +6,12 @@ import argparse
 import torch
 from tokenizers import Tokenizer
 
+from jaiyu.calculator import join_digits, pending_expr, result_span, space_digits
 from jaiyu.model.config import load_config
 from jaiyu.model.transformer import GPT
 
-import random
-
-EOS_ID = 1
+EOS_TOKEN = "<eos>"
+MAX_TOOL_CALLS = 8  # a stuck model can emit <calc> forever; cap the loop
 
 
 def parse_args():
@@ -28,7 +28,7 @@ def parse_args():
     p.add_argument("--repetition-penalty", type=float, default=1.0, help="Repetition penalty.")
     p.add_argument("--raw", action="store_true",
                    help="Use the prompt verbatim instead of wrapping it in the training format.")
-    p.add_argument("--tokenizer", default="data/tokenizer/jaiyu_tokenizer.json")
+    p.add_argument("--tokenizer", default="data/tokenizer/jaiyu_math_tokenizer.json")
     return p.parse_args()
 
 
@@ -41,20 +41,30 @@ def main() -> None:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    tokenizer = Tokenizer.from_file(args.tokenizer)
+
     config = load_config()
+    # The tokenizer, not the yaml, is the authority on vocab size, exactly as
+    # in training: a mismatch here is a shape error loading the embedding.
+    config.vocab_size = tokenizer.get_vocab_size()
+
     model = GPT(config)
-    state_dict = torch.load(args.checkpoint, map_location=device, weights_only=True)
-    model.load_state_dict(state_dict)
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=True)
+    # Training checkpoints bundle the optimizer and step alongside the weights;
+    # older ones held a bare state dict.
+    model.load_state_dict(ckpt["model"] if "model" in ckpt else ckpt)
     model.to(device)
     model.eval()
-
-    tokenizer = Tokenizer.from_file(args.tokenizer)
 
     # Every training sequence looks like "Question: ...\nThought: ...". A bare
     # "34 + 15" is off-distribution and the model wanders into another topic.
     prompt = args.prompt if args.raw else f"Question: {args.prompt}\nThought:"
-    ids = tokenizer.encode(prompt).ids
+    # The corpus spaces out every digit; an unspaced prompt is off-distribution.
+    ids = tokenizer.encode(space_digits(prompt)).ids
+    prompt_len = len(ids)
     idx = torch.tensor([ids], dtype=torch.long, device=device)
+    eos_id = tokenizer.get_vocab().get(EOS_TOKEN, 1)
+    tool_calls = 0
 
     with torch.no_grad():
         for _ in range(args.max_new_tokens):
@@ -77,11 +87,22 @@ def main() -> None:
                 next_id = torch.multinomial(probs, num_samples=1)
 
             idx = torch.cat([idx, next_id], dim=1)
-            if next_id.item() == EOS_ID:
+            if next_id.item() == eos_id:
                 break
 
+            # The model asked the calculator a question: answer it and let the
+            # model read the result instead of guessing digits.
+            completion = tokenizer.decode(idx[0, prompt_len:].tolist())
+            expr = pending_expr(completion) if tool_calls < MAX_TOOL_CALLS else None
+            if expr is not None:
+                tool_calls += 1
+                fed = tokenizer.encode(" " + result_span(expr)).ids
+                idx = torch.cat(
+                    [idx, torch.tensor([fed], dtype=torch.long, device=device)], dim=1
+                )
+
     output_ids = idx[0].tolist()
-    print(tokenizer.decode(output_ids))
+    print(join_digits(tokenizer.decode(output_ids)))
 
 
 if __name__ == "__main__":

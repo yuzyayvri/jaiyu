@@ -23,10 +23,12 @@ from sympy.parsing.sympy_parser import (
 )
 from tokenizers import Tokenizer
 
+from jaiyu.calculator import join_digits, pending_expr, result_span, space_digits
 from jaiyu.model.config import load_config
 from jaiyu.model.transformer import GPT
 
-EOS_ID = 1
+EOS_TOKEN = "<eos>"
+MAX_TOOL_CALLS = 8  # a stuck model can emit <calc> forever; cap the loop
 _TRANSFORMATIONS = standard_transformations + (implicit_multiplication_application,)
 
 
@@ -40,7 +42,7 @@ def parse_args():
     p.add_argument("--temperature", type=float, default=0.6)
     p.add_argument("--max-new-tokens", type=int, default=128)
     p.add_argument("--seed", type=int, default=None, help="Base seed; default picks a fresh one per run.")
-    p.add_argument("--tokenizer", default="data/tokenizer/jaiyu_tokenizer.json")
+    p.add_argument("--tokenizer", default="data/tokenizer/jaiyu_math_tokenizer.json")
     p.add_argument("--verbose", action="store_true")
     return p.parse_args()
 
@@ -63,9 +65,12 @@ def load_model(checkpoint, device):
 @torch.no_grad()
 def generate(model, config, tokenizer, prompt, device, seed, temperature, max_new_tokens):
     gen = torch.Generator(device=device).manual_seed(seed)
-    ids = tokenizer.encode(prompt).ids
+    # The corpus spaces out every digit; an unspaced prompt is off-distribution.
+    eos_id = tokenizer.get_vocab().get(EOS_TOKEN, 1)
+    ids = tokenizer.encode(space_digits(prompt)).ids
     prompt_len = len(ids)
     idx = torch.tensor([ids], dtype=torch.long, device=device)
+    tool_calls = 0
 
     for _ in range(max_new_tokens):
         idx_cond = idx[:, -config.block_size:]
@@ -76,11 +81,23 @@ def generate(model, config, tokenizer, prompt, device, seed, temperature, max_ne
             probs = torch.softmax(logits[:, -1, :] / temperature, dim=-1)
             next_id = torch.multinomial(probs, num_samples=1, generator=gen)
         idx = torch.cat([idx, next_id], dim=1)
-        if next_id.item() == EOS_ID:
+        if next_id.item() == eos_id:
             break
         # Training examples are "Thought: ...\nAnswer: X\n" -- two newlines.
         # Stop once both are out, or if the model starts a new example.
         completion = tokenizer.decode(idx[0, prompt_len:].tolist())
+
+        # The model asked the calculator a question: answer it and let the model
+        # read the result instead of guessing digits.
+        expr = pending_expr(completion) if tool_calls < MAX_TOOL_CALLS else None
+        if expr is not None:
+            tool_calls += 1
+            fed = tokenizer.encode(" " + result_span(expr)).ids
+            idx = torch.cat(
+                [idx, torch.tensor([fed], dtype=torch.long, device=device)], dim=1
+            )
+            continue
+
         if completion.count("\n") >= 2 or "Question:" in completion:
             break
 
@@ -95,6 +112,7 @@ _NUM = r"-?\d+\.\d+|-?\d+/\d+|-?\d+"
 
 
 def extract_model_answer(completion: str) -> str | None:
+    completion = join_digits(completion)  # "6 0" -> "60"
     # Only ever look at the model's own completion, never the prompt/question
     # text -- prompts contain "=" and digits too (e.g. "Solve 4x - 8 = 12.").
     if "Answer:" in completion:
@@ -173,7 +191,7 @@ def main():
             print(f"[attempt {i}] Answer: {answer} -> {'CORRECT' if correct else 'INCORRECT'}")
 
         if correct:
-            print(full_text)
+            print(join_digits(full_text))
             return
 
     print("WARNING: no sample verified correct; falling back to majority vote (UNVERIFIED).")
@@ -183,7 +201,7 @@ def main():
         return
     winner = votes.most_common(1)[0][0]
     winning_response = next(r for r, a, _ in attempts if a == winner)
-    print(winning_response)
+    print(join_digits(winning_response))
 
 
 if __name__ == "__main__":
